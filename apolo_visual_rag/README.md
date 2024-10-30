@@ -13,11 +13,26 @@ apolo config show
 Create storage:
 
 ```bash
-apolo mkdir -p storage:generative-models
-apolo mkdir -p storage:embedding-models
-apolo mkdir -p storage:database
-apolo ls storage
+apolo mkdir -p storage:visual_rag
+apolo ls storage:visual_rag
 ```
+
+Generative LLM:
+
+```bash
+apolo run --detach \
+          --no-http-auth \
+          --preset H100x1 \
+          --name generation-inference \
+          --http-port 80 \
+          --volume storage:visual_rag:/models:rw \
+          -e HF_TOKEN=$HF_TOKEN \
+          ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
+```
+
+
+
+
 
 Create Postgres:
 
@@ -45,18 +60,7 @@ apolo run --detach \
 
 Create models:
 
-Generative LLM:
 
-```bash
-apolo run --detach \
-          --no-http-auth \
-          --preset H100x1 \
-          --name generation-inference \
-          --http-port 80 \
-          --volume storage:generative-models:/data:rw \
-          -e HF_TOKEN=$HF_TOKEN \
-          ghcr.io/huggingface/text-generation-inference:2.2.0 -- --model-id meta-llama/Meta-Llama-3.1-70B-Instruct --quantize bitsandbytes-nf4
-```
 
 Embedding LLM:
 
@@ -128,3 +132,4 @@ python main.py query-canada-budget-rag --query 'What actions is the government t
 - https://www.llamaindex.ai/blog/boosting-rag-picking-the-best-embedding-reranker-models-42d079022e83
 - https://www.anyscale.com/blog/a-comprehensive-guidfe-for-building-rag-based-llm-applications-part-1
 - https://huggingface.co/spaces/mteb/leaderboard
+

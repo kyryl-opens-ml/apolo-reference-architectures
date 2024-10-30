@@ -10,18 +10,37 @@ import PIL
 import PIL.Image
 import requests
 import torch
-from colpali_engine.models.paligemma_colbert_architecture import ColPali
-from colpali_engine.trainer.retrieval_evaluator import CustomEvaluator
-from colpali_engine.utils.colpali_processing_utils import (
-    process_images,
-    process_queries,
-)
-from colpali_engine.utils.image_utils import get_base64_image
 from pdf2image import convert_from_path
 from pypdf import PdfReader
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoProcessor
+from openai import OpenAI
+
+
+from colpali_engine.models import ColPali
+from colpali_engine.models.paligemma.colpali.processing_colpali import ColPaliProcessor
+from colpali_engine.utils.processing_utils import BaseVisualRetrieverProcessor
+from colpali_engine.utils.torch_utils import ListDataset, get_torch_device
+from typing import List, cast, Tuple
+
+
+def get_base64_image(img: str | PIL.Image.Image, add_url_prefix: bool = True) -> str:
+    """
+    Convert an image (from a filepath or a PIL.Image object) to a JPEG-base64 string.
+    """
+    if isinstance(img, str):
+        img = PIL.Image.open(img)
+    elif isinstance(img, PIL.Image.Image):
+        pass
+    else:
+        raise ValueError("`img` must be a path to an image or a PIL Image object.")
+
+    buffered = io.BytesIO()
+    img.save(buffered, format="jpeg")
+    b64_data = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+    return f"data:image/jpeg;base64,{b64_data}" if add_url_prefix else b64_data
 
 
 def base64_to_pil(base64_str: str) -> PIL.Image.Image:
@@ -57,7 +76,7 @@ def download_pdf(url: str, save_directory: str = "."):
         raise Exception(f"Failed to download PDF: Status code {response.status_code}")
 
 
-def get_pdf_images(pdf_path):
+def get_pdf_images(pdf_path: str) -> Tuple[List[PIL.Image.Image], List[str]]:
     reader = PdfReader(pdf_path)
     page_texts = []
     for page_number in range(len(reader.pages)):
@@ -65,120 +84,101 @@ def get_pdf_images(pdf_path):
         text = page.extract_text()
         page_texts.append(text)
 
-    images = convert_from_path(pdf_path)
-    assert len(images) == len(page_texts)
-    return (images, page_texts)
+    page_images = convert_from_path(pdf_path)
+    assert len(page_images) == len(page_texts)
+    return page_images, page_texts
 
 
-def get_model_colpali(base_model_id: Optional[str] = None):
-    model_name = "vidore/colpali"
-    if base_model_id is None:
-        base_model_id = "google/paligemma-3b-mix-448"
-    model = ColPali.from_pretrained(base_model_id, torch_dtype=torch.bfloat16, device_map="cuda").eval()
-    model.load_adapter(model_name)
-    processor = AutoProcessor.from_pretrained(model_name)
+def get_model_colpali() -> Tuple[ColPali, ColPaliProcessor]:
+    device = get_torch_device("auto")
+    print(f"Device used: {device}")
+
+    # Model name
+    model_name = "vidore/colpali-v1.2"
+
+    # Load model
+    model = ColPali.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map=device,
+    ).eval()
+
+    # Load processor
+    processor = cast(ColPaliProcessor, ColPaliProcessor.from_pretrained(model_name))
+
+    if not isinstance(processor, BaseVisualRetrieverProcessor):
+        raise ValueError("Processor should be a BaseVisualRetrieverProcessor")
     return model, processor
 
 
-def get_pdf_embedding(pdf_path: str, model, processor):
-    page_images, page_texts = get_pdf_images(pdf_path=pdf_path)
-    page_embeddings = []
+
+def get_images_embedding(images: List[PIL.Image.Image], model: ColPali, processor: ColPaliProcessor) -> List[torch.Tensor]:
+    # Run inference - docs
     dataloader = DataLoader(
-        page_images,
-        batch_size=2,
-        shuffle=False,
-        collate_fn=lambda x: process_images(processor, x),
-    )
-
-    for batch_doc in tqdm(dataloader):
-        with torch.no_grad():
-            batch_doc = {k: v.to(model.device) for k, v in batch_doc.items()}
-            embeddings_doc = model(**batch_doc)
-            page_embeddings.extend(list(torch.unbind(embeddings_doc.to("cpu"))))
-
-    document = {
-        "name": pdf_path,
-        "page_images": page_images,
-        "page_texts": page_texts,
-        "page_embeddings": page_embeddings,
-    }
-    return document
-
-
-def get_query_embedding(query: str, model, processor):
-    dummy_image = PIL.Image.new("RGB", (448, 448), (255, 255, 255))
-    dataloader = DataLoader(
-        [query],
+        dataset=images,
         batch_size=4,
         shuffle=False,
-        collate_fn=lambda x: process_queries(processor, x, dummy_image),
+        collate_fn=lambda x: processor.process_images(x),
     )
+    ds: List[torch.Tensor] = []
+    for batch_doc in tqdm(dataloader):
+        with torch.no_grad() and torch.autocast(device_type="cuda"):
+            batch_doc = {k: v.to(model.device) for k, v in batch_doc.items()}
+            embeddings_doc = model(**batch_doc)
+        ds.extend(list(torch.unbind(embeddings_doc.to("cpu"))))
+    return ds
 
-    qs = []
-    for batch_query in dataloader:
-        with torch.no_grad():
-            batch_query = {k: v.to(model.device) for k, v in batch_query.items()}
-            embeddings_query = model(**batch_query)
-        qs.extend(list(torch.unbind(embeddings_query.to("cpu"))))
+def get_query_embedding(query: str, model: ColPali, processor: ColPaliProcessor):
+    batch_queries = processor.process_queries([query]).to(model.device)
 
-    q = {"query": query, "embeddings": qs[0]}
-    return q
+    with torch.no_grad() and torch.autocast(device_type="cuda"):
+        query_embeddings = model(**batch_queries)
 
-
-def embedd_docs(docs_path, model, processor):
-    docs_to_store_pages = []
-
-    for pdf_path in docs_path:
-        print(pdf_path)
-        pdf_doc = get_pdf_embedding(pdf_path=pdf_path, model=model, processor=processor)
-        for page_idx in range(len(pdf_doc["page_images"])):
-            docs_to_store_pages.append(
-                {
-                    "name": pdf_doc["name"],
-                    "page_idx": page_idx,
-                    "page_image": pdf_doc["page_images"][page_idx],
-                    "page_text": pdf_doc["page_texts"][page_idx],
-                    "page_embedding": pdf_doc["page_embeddings"][page_idx],
-                }
-            )
-
-    return docs_to_store_pages
+    return query_embeddings
 
 
-def create_db(docs_storage, table_name: str = "demo", db_path: str = "lancedb"):
+def add_to_db(pdf_path: str, page_images, page_texts, page_embeddings, table_name: str = "demo", db_path: str = "lancedb"):
+    assert len(page_images) == len(page_texts) == len(page_embeddings)
+
     db = lancedb.connect(db_path)
 
-    data = []
-    for x in docs_storage:
-        sample = {
-            "name": x["name"],
-            "page_texts": x["page_text"],
-            "image": get_base64_image(x["page_image"]),
-            "page_idx": x["page_idx"],
-            "page_embedding_flatten": x["page_embedding"].float().numpy().flatten(),
-            "page_embedding_shape": x["page_embedding"].float().numpy().shape
-        }
-        data.append(sample)
 
-    table = db.create_table(table_name, data, mode="overwrite")
+    data = []
+    for page_idx in range(len(page_images)):
+
+        record = {
+            "name": pdf_path,
+            "page_texts": page_texts[page_idx],
+            "image": get_base64_image(page_images[page_idx]),
+            "page_idx": page_idx,
+
+            "page_embedding_flatten": page_embeddings[page_idx].float().numpy().flatten(),
+            "page_embedding_shape": page_embeddings[page_idx].float().numpy().shape
+        }
+        data.append(record)
+    if table_name not in db.table_names():
+        table = db.create_table(table_name, data)
+    else:
+        table = db.open_table(table_name)
+        table.add(data)
     return table
 
 
-def search(query: str, table_name: str, model, processor, db_path: str = "lancedb", top_k: int = 3):
-    qs = get_query_embedding(query=query, model=model, processor=processor)
+
+
+
+def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_name: str = "demo", top_k: int = 3):
+
     db = lancedb.connect(db_path)
     table = db.open_table(table_name)
-    # Search over all dataset
     r = table.search().limit(None).to_list()
     
     def process_patch_embeddings(x):
         patches = np.reshape(x['page_embedding_flatten'], x['page_embedding_shape'])
-        return torch.from_numpy(patches).to(torch.bfloat16)
+        return torch.from_numpy(patches).to(torch.float)
     
-    all_pages_embeddings = [process_patch_embeddings(x) for x in r]
-    
-    retriever_evaluator = CustomEvaluator(is_multi_vector=True)
-    scores = retriever_evaluator.evaluate_colbert([qs["embeddings"]], all_pages_embeddings)
+    image_embeddings = [process_patch_embeddings(x) for x in r]
+    scores = processor.score_multi_vector(query_embeddings, image_embeddings)
 
     top_k_indices = torch.topk(scores, k=top_k, dim=1).indices
 
@@ -190,52 +190,56 @@ def search(query: str, table_name: str, model, processor, db_path: str = "lanced
         results.append(result)
     return results
 
+def run_vision_inference(input_image: PIL.Image.Image, prompt: str, model, processor):
+    client = OpenAI(base_url="http://generation-inference--9771360698.jobs.scottdc.org.neu.ro/v1", api_key="-")
 
-def get_model_phi_vision(model_id: Optional[str] = None):
-    if model_id is None:
-        model_id = "microsoft/Phi-3.5-vision-instruct"
-    # Note: set _attn_implementation='eager' if you don't have flash_attn installed
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="cuda",
-        trust_remote_code=True,
-        torch_dtype="auto",
-        # _attn_implementation='flash_attention_2'
-        _attn_implementation="eager",
+    chat_completion = client.chat.completions.create(
+        model="tgi",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Whats in this image?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": get_base64_image(input_image)
+                        },
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": get_base64_image(input_image)
+                        },
+                    },
+
+                ],
+            },
+        ],
+        stream=False,
     )
-    # for best performance, use num_crops=4 for multi-frame, num_crops=16 for single-frame.
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True, num_crops=4)
-    return model, processor
 
+    text_response = chat_completion.choices[0].message.content
+    return text_response
 
-def run_vision_inference(input_images: PIL.Image, prompt: str, model, processor):
-    images = []
-    placeholder = ""
+def ingest():
+    model, processor = get_model_colpali()
 
-    # Note: if OOM, you might consider reduce number of frames in this example.
-    for i in range(len(input_images)):
-        images.append(input_images[i])
-        placeholder += f"<|image_{i + 1}|>\n"
+    pdf_path = "./InfraRedReport.pdf"
+    print(f"Getting images and text from {pdf_path}")
+    page_images, page_texts = get_pdf_images(pdf_path=pdf_path)
+    print(f"Getting embeddings from {pdf_path}")
+    page_embeddings = get_images_embedding(images=page_images, model=model, processor=processor)
+    print(f"Adding to db {pdf_path}")
+    table = add_to_db(pdf_path=pdf_path, page_images=page_images, page_texts=page_texts, page_embeddings=page_embeddings)
+    print(f"Done! {pdf_path} should be in {table} table.")
+    
+def search():
+    model, processor = get_model_colpali()
 
-    messages = [
-        {"role": "user", "content": f"{placeholder} {prompt}"},
-    ]
-
-    prompt = processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-    inputs = processor(prompt, images, return_tensors="pt").to("cuda:0")
-
-    generation_args = {
-        "max_new_tokens": 512,
-        "temperature": 0.2,
-        "do_sample": True,
-    }
-
-    generate_ids = model.generate(**inputs, eos_token_id=processor.tokenizer.eos_token_id, **generation_args)
-    # remove input tokens
-    generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
-    response = processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    return response
+    query = "SaaS vs Infra?"
+    query_embeddings = get_query_embedding(query=query, model=model, processor=processor)
+    results = search_db(query_embeddings=query_embeddings, processor=processor, db_path="lancedb", table_name="demo", top_k=1)
 
 
 def cli():
