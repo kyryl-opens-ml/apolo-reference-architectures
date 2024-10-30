@@ -175,7 +175,7 @@ def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_
     r = table.search().limit(None).to_polars()
     
     def process_patch_embeddings(x):
-        patches = np.reshape(x['page_embedding_flatten'], x['page_embedding_shape'])
+        patches = np.reshape(x[4], x[5])
         return torch.from_numpy(patches).to(torch.float)
     
     image_embeddings = [process_patch_embeddings(r.row(idx)) for idx in range(len(r))]
@@ -185,39 +185,36 @@ def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_
 
     results = []
     for idx in top_k_indices[0]:
-        page = r[idx]
-        pil_image = base64_to_pil(page["image"])
-        result = {"name": page["name"], "page_idx": page["page_idx"], "pil_image": pil_image}
+        name, page_texts, image, page_idx, page_embedding_flatten, page_embedding_shape = r.row(idx)
+        pil_image = base64_to_pil(image)
+        result = {"name": name, "page_idx": page_idx, "pil_image": pil_image}
         results.append(result)
     return results
 
-def run_vision_inference(input_image: PIL.Image.Image, prompt: str, base_url: str):
+def run_vision_inference(input_images: List[PIL.Image.Image], prompt: str, base_url: str):
     client = OpenAI(base_url=base_url, api_key="-")
 
+    content = [
+                {"type": "text", "text": prompt},
+                ]
+
+    for idx in range(len(input_images)):
+        content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": get_base64_image(input_images[idx].resize((512, 512)))
+                        },
+                    })
+    print(f"content = {len(content)}")
     chat_completion = client.chat.completions.create(
         model="tgi",
         messages=[
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": get_base64_image(input_image)
-                        },
-                    },
-                    # {
-                    #     "type": "image_url",
-                    #     "image_url": {
-                    #         "url": get_base64_image(input_image)
-                    #     },
-                    # },
-
-                ],
+                "content": content,
             },
         ],
-        stream=False,
+        stream=False, 
     )
 
     text_response = chat_completion.choices[0].message.content
@@ -239,13 +236,13 @@ def ingest_data(folder_with_pdfs: str, table_name: str = "demo", db_path: str = 
         print(f"Done! {pdf_path} should be in {table} table.")
     print("All files are processed")
     
-def ask_data(user_query = "Market share by region?", table_name: str = "demo", db_path: str = "lancedb", base_url: str = "http://generation-inference--9771360698.jobs.scottdc.org.neu.ro/v1"):
+def ask_data(user_query = "What is market share by region?", table_name: str = "demo", db_path: str = "lancedb", base_url: str = "http://generation-inference--9771360698.jobs.scottdc.org.neu.ro/v1", top_k: int = 5):
     model, processor = get_model_colpali()
     print(f"Asking {user_query} query.")
 
     print("1. Search relevant images")
     query_embeddings = get_query_embedding(query=user_query, model=model, processor=processor)
-    results = search_db(query_embeddings=query_embeddings, processor=processor, db_path=db_path, table_name=table_name, top_k=1)
+    results = search_db(query_embeddings=query_embeddings, processor=processor, db_path=db_path, table_name=table_name, top_k=top_k)
     print(f"result most relevant {results}")
 
     print("2. Build prompt")
@@ -257,7 +254,8 @@ def ask_data(user_query = "Market share by region?", table_name: str = "demo", d
     """    
     print(f"Prompt = {prompt}")
     print("3. Query LLM with prompt and relavent images")
-    llm_response = run_vision_inference(input_image=results[0]['pil_image'], prompt=prompt, base_url=base_url)
+    input_images = [results[idx]['pil_image'] for idx in range(top_k)]
+    llm_response = run_vision_inference(input_images=input_images, prompt=prompt, base_url=base_url)
     print(f"llm_response {llm_response}")
 
 

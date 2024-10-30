@@ -36,7 +36,7 @@ Upload data sample:
 
 ```bash
 
-apolo cp -r ./raw-data/ storage:visual_rag/raw-data/
+apolo cp -r ./sample_data/ storage:visual_rag/raw-data/
 ```
 
 Ingest data to search later:
@@ -49,9 +49,10 @@ apolo run --detach \
           --name ingest-data \
           --http-port 80 \
           --volume storage:visual_rag/cache:/root/.cache/huggingface:rw \
-          --volume storage:visual_rag/raw-data/:/root/.cache/huggingface:rw \
+          --volume storage:visual_rag/raw-data/:/raw-data:rw \
+          --volume storage:visual_rag/lancedb-data/:/lancedb-data:rw \
           -e HF_TOKEN=$HF_TOKEN \
-          ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
+          ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest -- python main.py ingest-data /raw-data --table-name=demo --db-path=/lancedb-data/datastore
 ```
 
 Generative LLM:
@@ -67,120 +68,40 @@ apolo run --detach \
           ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
 ```
 
-Ask data and VLLM:
+Ask data and vLLM:
 
 ```bash
 apolo run --detach \
           --no-http-auth \
           --preset H100x1 \
-          --name generation-inference \
+          --name ask-data \
           --http-port 80 \
-          --volume storage:visual_rag:/models:rw \
+          --volume storage:visual_rag/cache:/root/.cache/huggingface:rw \
+          --volume storage:visual_rag/raw-data/:/raw-data:rw \
+          --volume storage:visual_rag/lancedb-data/:/lancedb-data:rw \
           -e HF_TOKEN=$HF_TOKEN \
-          ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
+          ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest -- python main.py ask-data --user-query="Market share by region?" --table-name=demo --db-path=/lancedb-data/datastore
 ```
 
 Bring together in UI:
 
-
-
-
-Create Postgres:
-
-```bash
-apolo run --detach \
-          --no-http-auth \
-          --preset cpu-medium \
-          --name pgvector \
-          --http-port 5432 \
-          --volume storage:database/pgvector:/var/lib/postgresql/data:rw \
-          -e POSTGRES_PASSWORD=postgres \
-          pgvector/pgvector:pg16
-```
-
- Create Argilla:
-
-```bash
-apolo run --detach \
-          --no-http-auth \
-          --preset cpu-medium \
-          --name argilla \
-          --http-port 6900 \
-          argilla/argilla-quickstart:v2.0.0rc2
-```
-
-Create models:
-
-
-
-Embedding LLM:
-
-```bash
-apolo run \
-  --detach \
-  --no-http-auth \
-  --preset H100x1 \
-  --name embedding-inference \
-  --http-port 80 \
-  --volume storage:embedding-models:/data:rw \
-  ghcr.io/huggingface/text-embeddings-inference:hopper-1.5 -- --model-id BAAI/bge-m3
-```
-
-Reference: <https://github.com/FlagOpen/FlagEmbedding/tree/master/FlagEmbedding/BGE_M3>
-
-Reranker LLM:
-
 ```bash
 apolo run --detach \
           --no-http-auth \
           --preset H100x1 \
-          --name reranker-inference \
+          --name ask-data \
           --http-port 80 \
-          --volume storage:embedding-models:/data:rw \
-          ghcr.io/huggingface/text-embeddings-inference:hopper-1.5 -- \
-          --model-id BAAI/bge-reranker-v2-m3
-```
-
-Reference: <https://huggingface.co/BAAI/bge-reranker-v2-m3>
-
-Connect to DB
-
-```bash
-apolo job port-forward pgvector 5432:5432
-psql -h 0.0.0.0 -U postgres -d postgres
+          --volume storage:visual_rag/cache:/root/.cache/huggingface:rw \
+          --volume storage:visual_rag/raw-data/:/raw-data:rw \
+          --volume storage:visual_rag/lancedb-data/:/lancedb-data:rw \
+          -e HF_TOKEN=$HF_TOKEN \
+          ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest -- streamlit run --server.address 0.0.0.0 --server.port 8080 app.py
 ```
 
 
-## Apolo RAG
-
-```bash
-python main.py build-apolo-docs-rag
-```
-
-```bash
-python main.py query-apolo-docs-rag --query 'How to run mlflow?'
-python main.py query-apolo-docs-rag --query 'How to run training?'
-python main.py query-apolo-docs-rag --query 'How to run custom job? Be specific'
-```
-
-## Canada 2024 budget RAG
-
-```bash
-python main.py build-canada-budget-rag
-```
-
-```bash
-python main.py query-canada-budget-rag --query 'What is the housing situation?'
-python main.py query-canada-budget-rag --query 'What actions is the government taking to increase the new housing supply?'
-```
 
 ## References
 
-- https://huggingface.co/learn/cookbook/en/rag_with_unstructured_data 
-- https://blog.vespa.ai/retrieval-with-vision-language-models-colpali/
-- https://huggingface.co/datasets/lamini/earnings-calls-qa
-- https://huggingface.co/datasets/eloukas/edgar-corpus
-- https://www.llamaindex.ai/blog/boosting-rag-picking-the-best-embedding-reranker-models-42d079022e83
-- https://www.anyscale.com/blog/a-comprehensive-guidfe-for-building-rag-based-llm-applications-part-1
-- https://huggingface.co/spaces/mteb/leaderboard
+- [ColPali: Efficient Document Retrieval with Vision Language Models](https://github.com/illuin-tech/colpali)
+- [Remove Complexity from Your RAG Applications](https://kyrylai.com/2024/09/09/remove-complexity-from-your-rag-applications/)
 
