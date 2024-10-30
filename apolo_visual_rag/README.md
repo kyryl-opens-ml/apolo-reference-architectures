@@ -17,6 +17,43 @@ apolo mkdir -p storage:visual_rag
 apolo ls storage:visual_rag
 ```
 
+Docker image build & share: 
+
+```bash
+
+docker build -t ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest .
+docker push ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest
+
+docker run -it --runtime=nvidia --gpus all -v $PWD:/main ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest /bin/bash
+python main.py ingest-data ./sample_data/
+python main.py ask-data 
+
+
+```
+
+
+Upload data sample: 
+
+```bash
+
+apolo cp -r ./raw-data/ storage:visual_rag/raw-data/
+```
+
+Ingest data to search later:
+
+
+```bash
+apolo run --detach \
+          --no-http-auth \
+          --preset H100x1 \
+          --name ingest-data \
+          --http-port 80 \
+          --volume storage:visual_rag/cache:/root/.cache/huggingface:rw \
+          --volume storage:visual_rag/raw-data/:/root/.cache/huggingface:rw \
+          -e HF_TOKEN=$HF_TOKEN \
+          ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
+```
+
 Generative LLM:
 
 ```bash
@@ -30,6 +67,20 @@ apolo run --detach \
           ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
 ```
 
+Ask data and VLLM:
+
+```bash
+apolo run --detach \
+          --no-http-auth \
+          --preset H100x1 \
+          --name generation-inference \
+          --http-port 80 \
+          --volume storage:visual_rag:/models:rw \
+          -e HF_TOKEN=$HF_TOKEN \
+          ghcr.io/huggingface/text-generation-inference:2.4.0 -- --model-id meta-llama/Llama-3.2-11B-Vision-Instruct
+```
+
+Bring together in UI:
 
 
 

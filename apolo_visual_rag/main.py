@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoProcessor
 from openai import OpenAI
-
+from tqdm import tqdm
+from pathlib import Path
 
 from colpali_engine.models import ColPali
 from colpali_engine.models.paligemma.colpali.processing_colpali import ColPaliProcessor
@@ -76,7 +77,7 @@ def download_pdf(url: str, save_directory: str = "."):
         raise Exception(f"Failed to download PDF: Status code {response.status_code}")
 
 
-def get_pdf_images(pdf_path: str) -> Tuple[List[PIL.Image.Image], List[str]]:
+def get_pdf_images(pdf_path: str | Path) -> Tuple[List[PIL.Image.Image], List[str]]:
     reader = PdfReader(pdf_path)
     page_texts = []
     for page_number in range(len(reader.pages)):
@@ -137,7 +138,7 @@ def get_query_embedding(query: str, model: ColPali, processor: ColPaliProcessor)
     return query_embeddings
 
 
-def add_to_db(pdf_path: str, page_images, page_texts, page_embeddings, table_name: str = "demo", db_path: str = "lancedb"):
+def add_to_db(pdf_path: str | Path, page_images, page_texts, page_embeddings, table_name: str = "demo", db_path: str = "lancedb"):
     assert len(page_images) == len(page_texts) == len(page_embeddings)
 
     db = lancedb.connect(db_path)
@@ -147,7 +148,7 @@ def add_to_db(pdf_path: str, page_images, page_texts, page_embeddings, table_nam
     for page_idx in range(len(page_images)):
 
         record = {
-            "name": pdf_path,
+            "name": str(pdf_path),
             "page_texts": page_texts[page_idx],
             "image": get_base64_image(page_images[page_idx]),
             "page_idx": page_idx,
@@ -171,13 +172,13 @@ def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_
 
     db = lancedb.connect(db_path)
     table = db.open_table(table_name)
-    r = table.search().limit(None).to_list()
+    r = table.search().limit(None).to_polars()
     
     def process_patch_embeddings(x):
         patches = np.reshape(x['page_embedding_flatten'], x['page_embedding_shape'])
         return torch.from_numpy(patches).to(torch.float)
     
-    image_embeddings = [process_patch_embeddings(x) for x in r]
+    image_embeddings = [process_patch_embeddings(r.row(idx)) for idx in range(len(r))]
     scores = processor.score_multi_vector(query_embeddings, image_embeddings)
 
     top_k_indices = torch.topk(scores, k=top_k, dim=1).indices
@@ -190,8 +191,8 @@ def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_
         results.append(result)
     return results
 
-def run_vision_inference(input_image: PIL.Image.Image, prompt: str, model, processor):
-    client = OpenAI(base_url="http://generation-inference--9771360698.jobs.scottdc.org.neu.ro/v1", api_key="-")
+def run_vision_inference(input_image: PIL.Image.Image, prompt: str, base_url: str):
+    client = OpenAI(base_url=base_url, api_key="-")
 
     chat_completion = client.chat.completions.create(
         model="tgi",
@@ -199,19 +200,19 @@ def run_vision_inference(input_image: PIL.Image.Image, prompt: str, model, proce
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Whats in this image?"},
+                    {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
                         "image_url": {
                             "url": get_base64_image(input_image)
                         },
                     },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": get_base64_image(input_image)
-                        },
-                    },
+                    # {
+                    #     "type": "image_url",
+                    #     "image_url": {
+                    #         "url": get_base64_image(input_image)
+                    #     },
+                    # },
 
                 ],
             },
@@ -222,30 +223,48 @@ def run_vision_inference(input_image: PIL.Image.Image, prompt: str, model, proce
     text_response = chat_completion.choices[0].message.content
     return text_response
 
-def ingest():
+def ingest_data(folder_with_pdfs: str, table_name: str = "demo", db_path: str = "lancedb"):
     model, processor = get_model_colpali()
 
-    pdf_path = "./InfraRedReport.pdf"
-    print(f"Getting images and text from {pdf_path}")
-    page_images, page_texts = get_pdf_images(pdf_path=pdf_path)
-    print(f"Getting embeddings from {pdf_path}")
-    page_embeddings = get_images_embedding(images=page_images, model=model, processor=processor)
-    print(f"Adding to db {pdf_path}")
-    table = add_to_db(pdf_path=pdf_path, page_images=page_images, page_texts=page_texts, page_embeddings=page_embeddings)
-    print(f"Done! {pdf_path} should be in {table} table.")
+    pdfs = [x for x in Path(folder_with_pdfs).iterdir() if x.name.endswith('.pdf')]
+    print(f"Input PDFs {pdfs}")
+
+    for pdf_path in tqdm(pdfs):
+        print(f"Getting images and text from {pdf_path}")
+        page_images, page_texts = get_pdf_images(pdf_path=pdf_path)
+        print(f"Getting embeddings from {pdf_path}")
+        page_embeddings = get_images_embedding(images=page_images, model=model, processor=processor)
+        print(f"Adding to db {pdf_path}")
+        table = add_to_db(pdf_path=pdf_path, page_images=page_images, page_texts=page_texts, page_embeddings=page_embeddings, table_name=table_name, db_path=db_path)
+        print(f"Done! {pdf_path} should be in {table} table.")
+    print("All files are processed")
     
-def search():
+def ask_data(user_query = "Market share by region?", table_name: str = "demo", db_path: str = "lancedb", base_url: str = "http://generation-inference--9771360698.jobs.scottdc.org.neu.ro/v1"):
     model, processor = get_model_colpali()
+    print(f"Asking {user_query} query.")
 
-    query = "SaaS vs Infra?"
-    query_embeddings = get_query_embedding(query=query, model=model, processor=processor)
-    results = search_db(query_embeddings=query_embeddings, processor=processor, db_path="lancedb", table_name="demo", top_k=1)
+    print("1. Search relevant images")
+    query_embeddings = get_query_embedding(query=user_query, model=model, processor=processor)
+    results = search_db(query_embeddings=query_embeddings, processor=processor, db_path=db_path, table_name=table_name, top_k=1)
+    print(f"result most relevant {results}")
+
+    print("2. Build prompt")
+    # https://cookbook.openai.com/examples/custom_image_embedding_search#user-querying-the-most-similar-image
+    prompt = f"""
+    Below is a user query, I want you to answer the query using images provided.
+    user query:
+    {user_query}
+    """    
+    print(f"Prompt = {prompt}")
+    print("3. Query LLM with prompt and relavent images")
+    llm_response = run_vision_inference(input_image=results[0]['pil_image'], prompt=prompt, base_url=base_url)
+    print(f"llm_response {llm_response}")
 
 
 def cli():
     app = typer.Typer()
-    app.command()
-    app.command()
+    app.command()(ingest_data)
+    app.command()(ask_data)
     app()
 
 if __name__ == '__main__':
