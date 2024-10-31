@@ -1,29 +1,25 @@
 import base64
 import io
 import os
-from typing import Optional
+from pathlib import Path
+from typing import List, Tuple, cast
 
-import typer
 import lancedb
 import numpy as np
 import PIL
 import PIL.Image
 import requests
 import torch
+import typer
+from colpali_engine.models import ColPali
+from colpali_engine.models.paligemma.colpali.processing_colpali import ColPaliProcessor
+from colpali_engine.utils.processing_utils import BaseVisualRetrieverProcessor
+from colpali_engine.utils.torch_utils import get_torch_device
+from openai import OpenAI
 from pdf2image import convert_from_path
 from pypdf import PdfReader
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoProcessor
-from openai import OpenAI
-from tqdm import tqdm
-from pathlib import Path
-
-from colpali_engine.models import ColPali
-from colpali_engine.models.paligemma.colpali.processing_colpali import ColPaliProcessor
-from colpali_engine.utils.processing_utils import BaseVisualRetrieverProcessor
-from colpali_engine.utils.torch_utils import ListDataset, get_torch_device
-from typing import List, cast, Tuple
 
 
 def get_base64_image(img: str | PIL.Image.Image, add_url_prefix: bool = True) -> str:
@@ -185,7 +181,7 @@ def search_db(query_embeddings: str, processor, db_path: str = "lancedb", table_
 
     results = []
     for idx in top_k_indices[0]:
-        name, page_texts, image, page_idx, page_embedding_flatten, page_embedding_shape = r.row(idx)
+        name, _, image, page_idx, _, _ = r.row(idx)
         pil_image = base64_to_pil(image)
         result = {"name": name, "page_idx": page_idx, "pil_image": pil_image}
         results.append(result)

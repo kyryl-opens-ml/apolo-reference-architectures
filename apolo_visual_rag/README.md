@@ -23,12 +23,6 @@ Docker image build & share:
 
 docker build -t ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest .
 docker push ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest
-
-docker run -it --runtime=nvidia --gpus all -v $PWD:/main ghcr.io/kyryl-opens-ml/apolo_visual_rag:latest /bin/bash
-python main.py ingest-data ./sample_data/
-python main.py ask-data 
-
-
 ```
 
 
@@ -89,8 +83,8 @@ Bring together in UI:
 apolo run --detach \
           --no-http-auth \
           --preset H100x1 \
-          --name ask-data \
-          --http-port 80 \
+          --name ask-data-ui \
+          --http-port 8080 \
           --volume storage:visual_rag/cache:/root/.cache/huggingface:rw \
           --volume storage:visual_rag/raw-data/:/raw-data:rw \
           --volume storage:visual_rag/lancedb-data/:/lancedb-data:rw \

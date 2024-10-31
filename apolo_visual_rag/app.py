@@ -1,16 +1,16 @@
+from pathlib import Path
+
 import streamlit as st
 from streamlit_pdf_viewer import pdf_viewer
-from pathlib import Path
-import PIL.Image
 
 # Import your custom functions from your codebase
 from main import (
     get_model_colpali,
     get_query_embedding,
-    search_db,
     run_vision_inference,
+    search_db,
 )
- 
+
 st.set_page_config(layout="wide")
 
 # Cache the model and processor to improve performance
