@@ -1,0 +1,49 @@
+kind: live
+title: "Apolo Flow Data Moat"
+
+jobs:
+  model_server:
+    image: vllm/vllm-openai:v0.7.2
+    preset: gpu-medium
+    detach: true
+    volumes:
+      - ${{ volumes.hf_cache.ref_rw }}
+    env:
+      HF_TOKEN: secret:HF_TOKEN
+    entrypoint: python3
+    cmd: > 
+      -m vllm.entrypoints.openai.api_server 
+      --model /storage/models/deepseek_finetuned 
+      --tokenizer /storage/models/deepseek_finetuned 
+      --port 8000 --max-model-len 100000 --dtype float16 
+    http_port: "8000"
+    http_auth: false
+    needs: [training]
+
+  dataset_generation:
+    image: python:3.10-slim
+    command: |
+      pip install synthetic-dataset-generator && \
+      python -c "import os; os.environ['MAX_NUM_ROWS']='100'; os.environ['SAVE_LOCAL_DIR']='/storage/data'; \
+                 from synthetic_dataset_generator import launch; launch()"
+    volumes:
+      - ${{ volumes.project.remote }}:/storage
+    preset: cpu-small
+    needs: []
+
+  training:
+    image: huggingface/transformers-pytorch-gpu:latest
+    command: |
+      accelerate launch scripts/finetune_deepseek.py \
+        --model-name /storage/models/deepseek-base \
+        --train-dataset /storage/data/latest_claims.json \
+        --output-dir /storage/models/deepseek_finetuned
+    volumes:
+      - ${{ volumes.project.remote }}:/storage
+    preset: gpu-large
+    needs: [dataset_generation]
+
+  filebrowser:
+    action: gh:apolo-actions/filebrowser@v1.0.1
+    args:
+      volumes_project_remote: $[[ volumes.project.remote ]]
