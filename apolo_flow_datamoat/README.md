@@ -87,37 +87,13 @@ Run data generation process
 
 ```
 
-!uv add synthetic-dataset-generator
+python ./src/apolo_flow_datamoat/generate_distilabel.py  \
+  --output-hf-dataset synthetic_data/sample-10000 \
+  --number-of-samples 10000
 
-import os
-
-from synthetic_dataset_generator import launch
-
-os.environ["HF_TOKEN"] = "hf_..."  # push the data to huggingface
-os.environ["VLLM_BASE_URL"] = "http://127.0.0.1:8000/"  # vllm base url
-os.environ["MODEL"] = "Qwen/Qwen2.5-1.5B-Instruct"  # model id
-os.environ["TOKENIZER_ID"] = "Qwen/Qwen2.5-1.5B-Instruct"  # tokenizer id
-os.environ["MAGPIE_PRE_QUERY_TEMPLATE"] = "qwen2"
-os.environ["MAX_NUM_ROWS"] = "10000"
-os.environ["DEFAULT_BATCH_SIZE"] = "2"
-os.environ["MAX_NUM_TOKENS"] = "1024"
-
-launch()
-
-os.environ["SAVE_LOCAL_DIR"] = "./synthetic_data"  # save dataset locally
-
-# (Optional) use a specific model or API for generation for better quality:
-# os.environ["MODEL"] = "meta-llama/Meta-Llama-3.1-8B-Instruct"  # example model
-# os.environ["HF_TOKEN"] = "<YOUR_HUGGINGFACE_API_TOKEN>"
-
-# Launch the synthetic data generation UI (this will use default text-generation model if none specified)
-launch()
-
-# After generation, the dataset is saved as a CSV/JSON in the specified directory.
-# For example, reading the first few entries:
-import pandas as pd
-df = pd.read_csv("./synthetic_data/synthetic_text_classification.csv")
-print(df.head(5))
+apolo run -s H100x1 -v storage:hf-cache:/root/.cache/huggingface --no-http-auth --http-port 8000 vllm/vllm-openai --  "python ./src/apolo_flow_datamoat/generate_distilabel.py  \
+  --output-hf-dataset synthetic_data/sample-10000 \
+  --number-of-samples 10000" 
 ```
 
 

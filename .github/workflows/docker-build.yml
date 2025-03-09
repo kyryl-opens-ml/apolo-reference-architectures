@@ -28,6 +28,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Clean disk
+        run: |
+          rm -rf /opt/hostedtoolcache
+
       - name: Build and push API Docker image
         uses: docker/build-push-action@v5
         with:

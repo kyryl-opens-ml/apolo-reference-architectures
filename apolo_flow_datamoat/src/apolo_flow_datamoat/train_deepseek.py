@@ -1,6 +1,6 @@
 import typer
 import torch
-from datasets import load_dataset
+from datasets import load_from_disk
 from transformers import TrainingArguments
 from trl import SFTTrainer
 from unsloth import is_bfloat16_supported, FastLanguageModel
