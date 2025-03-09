@@ -5,4 +5,5 @@ transformers
 trl
 unsloth
 pandas
-distilabel
+distilabel==1.5.3
+openai==1.64.0
