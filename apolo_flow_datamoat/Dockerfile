@@ -8,7 +8,7 @@ ARG TAG=${CUDA_VERSION}-${FLAVOR}-${OS_VERSION}
 # Base image
 FROM nvidia/cuda:${TAG}
 
-ARG PYTHON_VERSION=3.12
+ARG PYTHON_VERSION=3.11
 WORKDIR /app
 
 # Install Python and update pip
