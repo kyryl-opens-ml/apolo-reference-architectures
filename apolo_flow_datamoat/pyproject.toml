@@ -1,0 +1,10 @@
+[project]
+name = "apolo-flow-datamoat"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "apolo-all>=25.1.0",
+    "ipython>=8.32.0",
+]

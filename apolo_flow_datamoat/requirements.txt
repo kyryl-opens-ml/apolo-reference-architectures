@@ -1,0 +1,9 @@
+typer
+torch
+datasets
+transformers
+trl
+unsloth
+pandas
+distilabel==1.5.3
+openai==1.64.0

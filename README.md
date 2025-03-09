@@ -2,3 +2,4 @@
 
 - [Apolo RAG Basic](./apolo_rag_basic/)
 - [Apolo Visual RAG](./apolo_visual_rag/)
+- [Apolo Flow Data Moat](./apolo_flow_datamoat/)
